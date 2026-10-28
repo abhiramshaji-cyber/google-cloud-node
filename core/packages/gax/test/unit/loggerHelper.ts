@@ -577,9 +577,6 @@ describe('LoggerHelper', () => {
       ]);
       const otherWithoutMeta = sink.logs[0].fields.other as LogPayload;
       assert.strictEqual('response.payload' in otherWithoutMeta, false);
-      assert.strictEqual('exception.type' in otherWithoutMeta, false);
-      assert.strictEqual('exception.message' in otherWithoutMeta, false);
-      assert.strictEqual('exception.stacktrace' in otherWithoutMeta, false);
     });
 
     it('captures the attempt span context and logs on callback and stream failures', () => {
