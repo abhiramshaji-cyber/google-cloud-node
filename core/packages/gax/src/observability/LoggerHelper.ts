@@ -33,6 +33,7 @@ import {
   resolveExceptionMessage,
   resolveExceptionStacktrace,
   resolveExceptionType,
+  resolveResponsePayload,
   resolveResponseStatusCode,
 } from './errorUtil';
 import {getPromiseTarget, handlePromise, handleStream} from './TracerHelper';
@@ -55,6 +56,22 @@ export interface LogPayload {
   'exception.type'?: string;
   'exception.message'?: string;
   'exception.stacktrace'?: string;
+}
+
+/**
+ * Resolves a `LogSeverity` value across `google-logging-utils` versions where
+ * `LogSeverity` may be exported as a type only.
+ */
+function resolveLogSeverity(
+  level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR',
+): loggingUtils.LogSeverity {
+  return (
+    (
+      loggingUtils as {
+        LogSeverity?: Record<string, loggingUtils.LogSeverity>;
+      }
+    ).LogSeverity?.[level] ?? (level as loggingUtils.LogSeverity)
+  );
 }
 
 /**
@@ -126,6 +143,48 @@ export function buildLogAttributes(
 }
 
 /**
+ * Executes `fn` and attaches stream, promise, callback, or synchronous error
+ * handlers to invoke `onError` when the operation fails.
+ */
+function executeLoggedOperation<T>(
+  fn: (loggedCallback?: APICallback) => T,
+  onError: (err: unknown) => void,
+  isStreamCall: boolean,
+  userCallback?: APICallback,
+): T {
+  // Wrap user callback to log RPC errors before forwarding.
+  let callbackInvoked = false;
+  const loggedCallback: APICallback | undefined = userCallback
+    ? function (this: unknown, ...args: Parameters<APICallback>) {
+        callbackInvoked = true;
+        const err = args[0];
+        if (err) {
+          onError(err);
+        }
+        userCallback.apply(this, args);
+      }
+    : undefined;
+
+  // Execute call and attach error handlers for streams, promises, or sync throws.
+  try {
+    const result = fn(loggedCallback);
+    const promiseTarget = !isStreamCall ? getPromiseTarget(result) : null;
+    if (isStreamCall && result instanceof EventEmitter) {
+      handleStream(result, onError, () => {}, Boolean(loggedCallback));
+    } else if (promiseTarget) {
+      handlePromise(promiseTarget, onError, () => {});
+    }
+    return result;
+  } catch (syncErr) {
+    // Avoid logging errors thrown inside userCallback after RPC completion.
+    if (!callbackInvoked) {
+      onError(syncErr);
+    }
+    throw syncErr;
+  }
+}
+
+/**
  * Executes an API call and emits a single `WARNING` log entry if the logical
  * request fails across promise, callback, stream, or synchronous execution boundaries.
  *
@@ -179,17 +238,10 @@ export function logCall<T = GaxCallResult>(
       ...(stacktrace !== undefined ? {'exception.stacktrace': stacktrace} : {}),
     };
 
-    const warningSeverity =
-      (
-        loggingUtils as {
-          LogSeverity?: {WARNING: loggingUtils.LogSeverity};
-        }
-      ).LogSeverity?.WARNING ?? ('WARNING' as loggingUtils.LogSeverity);
-
     // Emit structured WARNING log.
     logger(
       {
-        severity: warningSeverity,
+        severity: resolveLogSeverity('WARNING'),
         ...(traceId ? {telemetryTraceId: traceId} : {}),
         ...(spanId ? {telemetrySpanId: spanId} : {}),
         other: attributes,
@@ -199,34 +251,65 @@ export function logCall<T = GaxCallResult>(
     );
   };
 
-  // Wrap user callback to log RPC errors before forwarding.
-  let callbackInvoked = false;
-  const loggedCallback: APICallback | undefined = userCallback
-    ? function (this: unknown, ...args: Parameters<APICallback>) {
-        callbackInvoked = true;
-        const err = args[0];
-        if (err) {
-          emitL3WarnLog(err);
-        }
-        userCallback.apply(this, args);
-      }
-    : undefined;
+  return executeLoggedOperation(fn, emitL3WarnLog, isStreamCall, userCallback);
+}
 
-  // Execute call and attach error handlers for streams, promises, or sync throws.
-  try {
-    const result = fn(loggedCallback);
-    const promiseTarget = !isStreamCall ? getPromiseTarget(result) : null;
-    if (isStreamCall && result instanceof EventEmitter) {
-      handleStream(result, emitL3WarnLog, () => {}, Boolean(loggedCallback));
-    } else if (promiseTarget) {
-      handlePromise(promiseTarget, emitL3WarnLog, () => {});
+/**
+ * Executes an individual RPC transport attempt and emits a `DEBUG` log entry
+ * if the attempt fails across promise, callback, stream, or synchronous execution boundaries.
+ *
+ * @template T
+ * @param {AttemptTraceContext} attemptDynamicArgs - Dynamic context for the RPC attempt.
+ * @param {StaticTraceContext} staticArgs - Static context for the client library.
+ * @param {function} fn - The transport attempt operation to execute. Receives the wrapped
+ *   callback when `userCallback` is supplied, otherwise `undefined`.
+ * @param {boolean} [isStreamCall=false] - Whether the operation returns a stream (`EventEmitter`).
+ * @param {APICallback} [userCallback] - Optional attempt callback.
+ * @returns {T} The return value of `fn`.
+ */
+export function logNetworkAttempt<T = GaxCallResult>(
+  attemptDynamicArgs: AttemptTraceContext,
+  staticArgs: StaticTraceContext,
+  fn: (loggedCallback?: APICallback) => T,
+  isStreamCall = false,
+  userCallback?: APICallback,
+): T {
+  // Snapshot attempt context in case async rejection loses active context.
+  const initialContext = context.active();
+
+  const emitL4DebugLog = (err: unknown) => {
+    // Resolve logger and active T4 attempt span context for this attempt.
+    const logger = getGaxLogger(staticArgs?.gcpClientService);
+    const attemptSpan =
+      getActiveTraceContext()?.attemptSpan ??
+      getActiveTraceContext(initialContext)?.attemptSpan;
+    const spanContext = attemptSpan?.spanContext();
+    const traceId = spanContext?.traceId;
+    const spanId = spanContext?.spanId;
+
+    // Build structured log attributes and attach attempt metadata payload.
+    const attributes = buildLogAttributes(err, attemptDynamicArgs, staticArgs);
+    const responsePayload = resolveResponsePayload(
+      (err as {metadata?: unknown} | null | undefined)?.metadata,
+    );
+    if (responsePayload !== undefined) {
+      attributes['response.payload'] = responsePayload;
     }
-    return result;
-  } catch (syncErr) {
-    // Avoid logging errors thrown inside userCallback after RPC completion.
-    if (!callbackInvoked) {
-      emitL3WarnLog(syncErr);
-    }
-    throw syncErr;
-  }
+
+    // Emit structured DEBUG log for the failed attempt.
+    const message = resolveExceptionMessage(err, attemptDynamicArgs.rpcType);
+    logger(
+      {
+        severity: resolveLogSeverity('DEBUG'),
+        ...(traceId ? {telemetryTraceId: traceId} : {}),
+        ...(spanId ? {telemetrySpanId: spanId} : {}),
+        other: attributes,
+      },
+      'RPC attempt failed: %s',
+      message || err,
+    );
+  };
+
+  // Intercept and dispatch execution boundaries for the attempt.
+  return executeLoggedOperation(fn, emitL4DebugLog, isStreamCall, userCallback);
 }
