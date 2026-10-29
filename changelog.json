@@ -4,6 +4,33 @@
     {
       "changes": [
         {
+          "type": "fix",
+          "sha": "2405101edaec264681f17d1038a6f65d126c7ea4",
+          "message": "Prefer AsyncLocalStorageContextManager in OpenTelemetry instrumentation",
+          "issues": [
+            "9610"
+          ],
+          "scope": "spanner"
+        },
+        {
+          "type": "fix",
+          "sha": "7a5db1185a0c21a6f554f8c6bf640144178d5b9c",
+          "message": "ExcludeTxnFromChangeStreams field and request headers i…",
+          "issues": [
+            "9618"
+          ],
+          "scope": "Spanner"
+        }
+      ],
+      "version": "9.1.1",
+      "language": "JAVASCRIPT",
+      "artifactName": "@google-cloud/spanner",
+      "id": "b3ed1560-4663-4a74-82a3-6593396d6ab3",
+      "createTime": "2026-10-29T00:25:28.540Z"
+    },
+    {
+      "changes": [
+        {
           "type": "feat",
           "sha": "5e53e2e78a9103005899350313b2777d86967e73",
           "message": "Onboard a new library",
@@ -106874,5 +106901,5 @@
       "createTime": "2023-01-28T04:18:24.718Z"
     }
   ],
-  "updateTime": "2026-10-28T20:45:53.018Z"
+  "updateTime": "2026-10-29T00:25:28.540Z"
 }
