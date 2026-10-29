@@ -5,6 +5,13 @@
 
 [1]: https://www.npmjs.com/package/gax-nodejs?activeTab=versions
 
+## [6.15.0](https://github.com/googleapis/google-cloud-node/compare/google-gax-v6.14.0...google-gax-v6.15.0) (2026-10-29)
+
+
+### Features
+
+* **gax:** Support cancelling API calls via CallOptions.signal ([#9462](https://github.com/googleapis/google-cloud-node/issues/9462)) ([4e1f88f](https://github.com/googleapis/google-cloud-node/commit/4e1f88f1265595f1da1283f7310148dabcf3f8ee))
+
 ## [6.14.0](https://github.com/googleapis/google-cloud-node/compare/google-gax-v6.13.0...google-gax-v6.14.0) (2026-10-28)
 
 
